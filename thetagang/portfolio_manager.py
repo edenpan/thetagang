@@ -160,10 +160,13 @@ class PortfolioManager:
     def wait_for_open_interest_for(self, tickers: list[Ticker], wait_time):
         def open_interest_is_not_ready(ticker):
             if ticker.contract.right.startswith("P"):
+                print(ticker.contract)
+                print(ticker.marketPrice())
                 return util.isNan(ticker.putOpenInterest)
             return util.isNan(ticker.callOpenInterest)
 
         try:
+            print("wait_time" + str(wait_time))
             wait_n_seconds(
                 lambda: any(open_interest_is_not_ready(ticker) for ticker in tickers),
                 lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
@@ -980,6 +983,10 @@ class PortfolioManager:
             targets[symbol] = round(
                 self.config["symbols"][symbol]["weight"] * total_buying_power, 2
             )
+            print("symbol:" + str(symbol))
+            print("targets[symbol]:" + str(targets[symbol]))
+            print(ticker)
+            print("ticker.marketPrice():" + str(ticker.marketPrice()))
             target_quantity = math.floor(targets[symbol] / ticker.marketPrice())
 
             # Current number of short puts
@@ -1293,6 +1300,8 @@ class PortfolioManager:
         target_dte=None,
         target_delta=None,
     ):
+        print(f"Searching for contracts: Type={right}, Strike Limit={strike_limit}, Target DTE={target_dte}, Target Delta={target_delta}")
+        console.print(f"Searching for contracts: Type={right}, Strike Limit={strike_limit}, Target DTE={target_dte}, Target Delta={target_delta}")
         if not target_dte:
             target_dte = self.config["target"]["dte"]
         if not target_delta:
@@ -1307,6 +1316,7 @@ class PortfolioManager:
         with console.status(
             "[bold blue_violet]Hunting for juicy contracts... 😎"
         ) as status:
+            print("main_contract:" + str(main_contract))
             self.ib.qualifyContracts(main_contract)
 
             main_contract_ticker = self.get_ticker_for(main_contract, midpoint=True)
@@ -1339,12 +1349,14 @@ class PortfolioManager:
                 else 0
             )
             strikes = sorted(strike for strike in chain.strikes if valid_strike(strike))
+            console.print(f"Valid strikes after filtering: {strikes}")
             expirations = sorted(
                 exp
                 for exp in chain.expirations
                 if option_dte(exp) >= target_dte and option_dte(exp) >= min_dte
             )[:chain_expirations]
             rights = [right]
+            console.print(f"Valid expirations after filtering: {expirations}")
 
             def nearest_strikes(strikes):
                 chain_strikes = self.config["option_chains"]["strikes"]
@@ -1373,7 +1385,7 @@ class PortfolioManager:
             ]
 
             contracts = self.ib.qualifyContracts(*contracts)
-
+            console.print(f"Qualified contracts from API: {contracts}")
             # exclude strike, but only for the first exp
             if exclude_exp_strike:
                 contracts = [

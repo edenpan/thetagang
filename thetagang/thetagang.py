@@ -248,7 +248,7 @@ def start(config_path, without_ibc=False):
         currency=probeContractConfig["currency"],
         exchange=probeContractConfig["exchange"],
     )
-
+    print("without_ibc:" + str(without_ibc))
     if not without_ibc:
         # TWS version is pinned to current stable
         ibc_config = config.get("ibc", {})
@@ -256,7 +256,7 @@ def start(config_path, without_ibc=False):
         ibc_keywords = {
             k: ibc_config[k] for k in ibc_config if k not in ["RaiseRequestErrors"]
         }
-        ibc = IBC(1019, **ibc_keywords)
+        ibc = IBC(10.19, **ibc_keywords)
 
         ib.RaiseRequestErrors = ibc_config.get("RaiseRequestErrors", False)
 
