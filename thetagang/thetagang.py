@@ -47,12 +47,15 @@ def start(config_path: str, without_ibc: bool = False, dry_run: bool = False) ->
         currency=probe_contract_config.currency,
         exchange=probe_contract_config.exchange,
     )
-
+    print("without_ibc:" + str(without_ibc))
     if not without_ibc:
         # TWS version is pinned to current stable
-        ibc_config = config.ibc
-        ibc = IBC(1030, **ibc_config.to_dict())
-        log.info(f"Starting TWS with twsVersion={ibc.twsVersion}")
+        ibc_config = config.get("ibc", {})
+        # Remove any config params that aren't valid keywords for IBC
+        ibc_keywords = {
+            k: ibc_config[k] for k in ibc_config if k not in ["RaiseRequestErrors"]
+        }
+        ibc = IBC(10.19, **ibc_keywords)
 
         ib.RaiseRequestErrors = ibc_config.RaiseRequestErrors
 

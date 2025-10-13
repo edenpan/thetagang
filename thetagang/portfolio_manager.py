@@ -105,11 +105,129 @@ class PortfolioManager:
         )
         return contract.strike >= ticker.marketPrice()
 
-    def position_can_be_closed(self, position: PortfolioItem, table: Table) -> bool:
+    
+
+    def wait_for_greeks(self, ticker, wait_time):
+        try:
+            wait_n_seconds(
+                lambda: ticker.modelGreeks is None
+                or util.isNan(ticker.modelGreeks.delta),
+                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
+                wait_time,
+            )
+        except RuntimeError:
+            return False
+        return True
+
+    def wait_for_market_price_for(self, tickers: list[Ticker], wait_time):
+        try:
+            wait_n_seconds(
+                lambda: any(util.isNan(ticker.marketPrice()) for ticker in tickers),
+                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
+                wait_time,
+            )
+        except RuntimeError:
+            return False
+        return True
+
+    def wait_for_greeks_for(self, tickers: list[Ticker], wait_time):
+        try:
+            wait_n_seconds(
+                lambda: any(
+                    ticker.modelGreeks is None
+                    or ticker.modelGreeks.delta is None
+                    or util.isNan(ticker.modelGreeks.delta)
+                    for ticker in tickers
+                ),
+                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
+                wait_time,
+            )
+        except RuntimeError:
+            return False
+        return True
+
+    def wait_for_open_interest_for(self, tickers: list[Ticker], wait_time):
+        def open_interest_is_not_ready(ticker):
+            if ticker.contract.right.startswith("P"):
+                print(ticker.contract)
+                print(ticker.marketPrice())
+                return util.isNan(ticker.putOpenInterest)
+            return util.isNan(ticker.callOpenInterest)
+
+        try:
+            print("wait_time" + str(wait_time))
+            wait_n_seconds(
+                lambda: any(open_interest_is_not_ready(ticker) for ticker in tickers),
+                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
+                wait_time,
+            )
+        except RuntimeError:
+            console.print(
+                f"Timeout waiting on market data for contracts="
+                f"{[ticker.contract for ticker in tickers if open_interest_is_not_ready(ticker)]}, continuing...",
+            )
+            return False
+        finally:
+            for ticker in tickers:
+                if open_interest_is_not_ready(ticker):
+                    self.ib.cancelMktData(ticker.contract)
+
+    @lru_cache(maxsize=32)
+    def get_chains_for_contract(self, contract):
+        return self.ib.reqSecDefOptParams(
+            contract.symbol, "", contract.secType, contract.conId
+        )
+
+    @lru_cache(maxsize=32)
+    def get_ticker_for_stock(
+        self, symbol, primary_exchange, order_exchange=None
+    ) -> Ticker:
+        stock = Stock(
+            symbol,
+            order_exchange or self.get_order_exchange(),
+            currency="USD",
+            primaryExchange=primary_exchange,
+        )
+        self.ib.qualifyContracts(stock)
+        return self.get_ticker_for(stock)
+
+    @lru_cache(maxsize=32)
+    def get_ticker_for(self, contract, midpoint=False) -> Ticker:
+        [ticker] = self.ib.reqTickers(contract)
+
+        if midpoint:
+            self.wait_for_midpoint_price(
+                ticker, wait_time=self.api_response_wait_time()
+            )
+        else:
+            self.wait_for_market_price(ticker, wait_time=self.api_response_wait_time())
+
+        return ticker
+
+    @lru_cache(maxsize=32)
+    def get_ticker_list_for(self, contracts) -> list[Ticker]:
+        ticker_list = self.ib.reqTickers(*contracts)
+
+        try:
+            wait_n_seconds(
+                lambda: any([util.isNan(t.midpoint()) for t in ticker_list]),
+                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
+                self.api_response_wait_time(),
+            )
+        except RuntimeError:
+            pass
+
+        return ticker_list
+
+    def put_is_itm(self, contract):
+        ticker = self.get_ticker_for_stock(contract.symbol, contract.primaryExchange)
+
+        return contract.strike >= ticker.marketPrice()
+
+    def position_can_be_closed(self, position, table):
         if not self.config.trading_is_allowed(position.contract.symbol):
             return False
-
-        close_at_pnl = self.config.roll_when.close_at_pnl
+        close_at_pnl = self.config["roll_when"]["close_at_pnl"]
         if close_at_pnl:
             pnl = position_pnl(position)
 
@@ -991,17 +1109,11 @@ class PortfolioManager:
             targets[symbol] = round(
                 self.config.symbols[symbol].weight * total_buying_power, 2
             )
-            market_price = ticker.marketPrice()
-            if (
-                not market_price
-                or math.isnan(market_price)
-                or math.isclose(market_price, 0)
-            ):
-                log.error(
-                    f"Invalid market price for {symbol} (market_price={market_price}), skipping for now"
-                )
-                return
-            self.target_quantities[symbol] = math.floor(targets[symbol] / market_price)
+            print("symbol:" + str(symbol))
+            print("targets[symbol]:" + str(targets[symbol]))
+            print(ticker)
+            print("ticker.marketPrice():" + str(ticker.marketPrice()))
+            target_quantity = math.floor(targets[symbol] / ticker.marketPrice())
 
             if symbol in portfolio_positions:
                 # Current number of puts
@@ -1472,27 +1584,22 @@ class PortfolioManager:
 
     async def find_eligible_contracts(
         self,
-        underlying: Contract,
-        right: str,
-        strike_limit: Optional[float],
-        minimum_price: Callable[[], float],
-        exclude_expirations_before: Optional[str] = None,
-        exclude_exp_strike: Optional[Tuple[float, str]] = None,
-        fallback_minimum_price: Optional[Callable[[], float]] = None,
-        target_dte: Optional[int] = None,
-        target_delta: Optional[float] = None,
-    ) -> Ticker:
-        contract_target_dte: int = (
-            target_dte if target_dte else self.config.get_target_dte(underlying.symbol)
-        )
-        contract_target_delta: float = (
-            target_delta
-            if target_delta
-            else self.config.get_target_delta(underlying.symbol, right)
-        )
-        contract_max_dte = self.config.get_max_dte_for(
-            underlying.symbol,
-        )
+        main_contract,
+        right,
+        strike_limit,
+        exclude_expirations_before=None,
+        exclude_exp_strike=None,
+        minimum_price=0.0,
+        preferred_minimum_price=None,
+        target_dte=None,
+        target_delta=None,
+    ):
+        print(f"Searching for contracts: Type={right}, Strike Limit={strike_limit}, Target DTE={target_dte}, Target Delta={target_delta}")
+        console.print(f"Searching for contracts: Type={right}, Strike Limit={strike_limit}, Target DTE={target_dte}, Target Delta={target_delta}")
+        if not target_dte:
+            target_dte = self.config["target"]["dte"]
+        if not target_delta:
+            target_delta = get_target_delta(self.config, main_contract.symbol, right)
 
         log.notice(
             f"{underlying.symbol}: Searching option chain for "
@@ -1502,6 +1609,11 @@ class PortfolioManager:
             f"contract_target_delta={contract_target_delta}, "
             "this can take a while...",
         )
+        with console.status(
+            "[bold blue_violet]Hunting for juicy contracts... 😎"
+        ) as status:
+            print("main_contract:" + str(main_contract))
+            self.ib.qualifyContracts(main_contract)
 
         underlying_ticker = await self.ibkr.get_ticker_for_contract(underlying)
 
@@ -1538,7 +1650,15 @@ class PortfolioManager:
             raise NoValidContractsError(
                 f"No valid contract expirations found for {underlying.symbol}. Continuing anyway...",
             )
-        rights = [right]
+            strikes = sorted(strike for strike in chain.strikes if valid_strike(strike))
+            console.print(f"Valid strikes after filtering: {strikes}")
+            expirations = sorted(
+                exp
+                for exp in chain.expirations
+                if option_dte(exp) >= target_dte and option_dte(exp) >= min_dte
+            )[:chain_expirations]
+            rights = [right]
+            console.print(f"Valid expirations after filtering: {expirations}")
 
         def nearest_strikes(strikes: List[float]) -> List[float]:
             chain_strikes = self.config.option_chains.strikes
@@ -1583,27 +1703,18 @@ class PortfolioManager:
                 )
             ]
 
-        tickers = await self.ibkr.get_tickers_for_contracts(
-            underlying.symbol,
-            contracts,
-            generic_tick_list="101",
-            required_fields=[],
-            optional_fields=[
-                TickerField.MARKET_PRICE,
-                TickerField.GREEKS,
-                TickerField.OPEN_INTEREST,
-                TickerField.MIDPOINT,
-            ],
-        )
-
-        def open_interest_is_valid(ticker: Ticker, minimum_open_interest: int) -> bool:
-            # The open interest value is never present when using historical
-            # data, so just ignore it when the value is None
-            if right.startswith("P"):
-                return ticker.putOpenInterest >= minimum_open_interest
-            if right.startswith("C"):
-                return ticker.callOpenInterest >= minimum_open_interest
-            return False
+            contracts = self.ib.qualifyContracts(*contracts)
+            console.print(f"Qualified contracts from API: {contracts}")
+            # exclude strike, but only for the first exp
+            if exclude_exp_strike:
+                contracts = [
+                    c
+                    for c in contracts
+                    if (
+                        c.lastTradeDateOrContractMonth != exclude_exp_strike[1]
+                        or c.strike != exclude_exp_strike[0]
+                    )
+                ]
 
         def delta_is_valid(ticker: Ticker) -> bool:
             return (
