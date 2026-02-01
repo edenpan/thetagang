@@ -166,7 +166,6 @@ class PortfolioManager:
             return util.isNan(ticker.callOpenInterest)
 
         try:
-            print("wait_time" + str(wait_time))
             wait_n_seconds(
                 lambda: any(open_interest_is_not_ready(ticker) for ticker in tickers),
                 lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
@@ -983,11 +982,41 @@ class PortfolioManager:
             targets[symbol] = round(
                 self.config["symbols"][symbol]["weight"] * total_buying_power, 2
             )
-            print("symbol:" + str(symbol))
-            print("targets[symbol]:" + str(targets[symbol]))
-            print(ticker)
-            print("ticker.marketPrice():" + str(ticker.marketPrice()))
-            target_quantity = math.floor(targets[symbol] / ticker.marketPrice())
+            # 获取市场价格，带重试和 NaN 检查
+            market_price = ticker.marketPrice()
+            console.print(
+                f"[yellow]Processing {symbol}: target=${targets[symbol]:.2f}, "
+                f"market_price=${market_price}[/yellow]"
+            )
+
+            # 检查市场价格是否有效
+            if util.isNan(market_price) or market_price <= 0:
+                console.print(
+                    f"[red]Warning: Invalid market price (NaN or <=0) for {symbol}. "
+                    f"ticker.last={ticker.last}, ticker.close={ticker.close}, "
+                    f"ticker.bid={ticker.bid}, ticker.ask={ticker.ask}[/red]"
+                )
+                # 尝试使用其他价格源
+                if not util.isNan(ticker.last) and ticker.last > 0:
+                    market_price = ticker.last
+                    console.print(f"[yellow]Using ticker.last as fallback: ${market_price}[/yellow]")
+                elif not util.isNan(ticker.close) and ticker.close > 0:
+                    market_price = ticker.close
+                    console.print(f"[yellow]Using ticker.close as fallback: ${market_price}[/yellow]")
+                else:
+                    console.print(
+                        f"[red]ERROR: Cannot get valid price for {symbol}. Skipping this symbol.[/red]"
+                    )
+                    console.print(
+                        "[red]Possible causes:[/red]\n"
+                        "  1. Market data subscription issue\n"
+                        "  2. Market is closed\n"
+                        "  3. Insufficient wait time for market data\n"
+                        "  4. Competing session (logged in elsewhere)"
+                    )
+                    continue  # 跳过此标的
+
+            target_quantity = math.floor(targets[symbol] / market_price)
 
             # Current number of short puts
             put_count = count_short_option_positions(symbol, portfolio_positions, "P")
@@ -1300,8 +1329,7 @@ class PortfolioManager:
         target_dte=None,
         target_delta=None,
     ):
-        print(f"Searching for contracts: Type={right}, Strike Limit={strike_limit}, Target DTE={target_dte}, Target Delta={target_delta}")
-        console.print(f"Searching for contracts: Type={right}, Strike Limit={strike_limit}, Target DTE={target_dte}, Target Delta={target_delta}")
+        console.print(f"[cyan]Searching for contracts: Type={right}, Strike Limit={strike_limit}, Target DTE={target_dte}, Target Delta={target_delta}[/cyan]")
         if not target_dte:
             target_dte = self.config["target"]["dte"]
         if not target_delta:
@@ -1316,14 +1344,27 @@ class PortfolioManager:
         with console.status(
             "[bold blue_violet]Hunting for juicy contracts... 😎"
         ) as status:
-            print("main_contract:" + str(main_contract))
             self.ib.qualifyContracts(main_contract)
 
             main_contract_ticker = self.get_ticker_for(main_contract, midpoint=True)
             main_contract_price = midpoint_or_market_price(main_contract_ticker)
 
             chains = self.get_chains_for_contract(main_contract)
-            chain = next(c for c in chains if c.exchange == main_contract.exchange)
+
+            # 选择行权价数量最多的链（过滤掉异常的特殊期权链）
+            matching_chains = [c for c in chains if c.exchange == main_contract.exchange]
+            if not matching_chains:
+                raise RuntimeError(
+                    f"No option chains found for {main_contract.symbol} on exchange {main_contract.exchange}"
+                )
+
+            # 按行权价数量排序，选择最多的那个（避免选到只有1-3个特殊行权价的异常链）
+            chain = max(matching_chains, key=lambda c: len(c.strikes))
+
+            console.print(
+                f"[green]Selected option chain with {len(chain.strikes)} strikes "
+                f"and {len(chain.expirations)} expirations[/green]"
+            )
 
             def valid_strike(strike):
                 if right.startswith("P") and strike_limit:
@@ -1358,6 +1399,21 @@ class PortfolioManager:
             rights = [right]
             console.print(f"Valid expirations after filtering: {expirations}")
 
+            # 检查是否有有效的行权价和到期日
+            if len(strikes) == 0:
+                raise RuntimeError(
+                    f"No valid strikes found for {main_contract.symbol}. "
+                    f"This may be due to market data subscription issues or no contracts matching criteria. "
+                    f"Please check your IBKR market data subscriptions."
+                )
+            
+            if len(expirations) == 0:
+                raise RuntimeError(
+                    f"No valid expirations found for {main_contract.symbol}. "
+                    f"target_dte={target_dte}, min_dte={min_dte}. "
+                    f"Please check your configuration."
+                )
+
             def nearest_strikes(strikes):
                 chain_strikes = self.config["option_chains"]["strikes"]
                 if right.startswith("P"):
@@ -1365,6 +1421,14 @@ class PortfolioManager:
                 return strikes[:chain_strikes]
 
             strikes = nearest_strikes(strikes)
+            
+            # 再次检查 strikes 是否为空（nearest_strikes 可能返回空列表）
+            if len(strikes) == 0:
+                raise RuntimeError(
+                    f"No valid strikes found after filtering for {main_contract.symbol}. "
+                    f"This may be due to market data subscription issues."
+                )
+            
             console.print(
                 f"Scanning between strikes {strikes[0]} and {strikes[-1]},"
                 f" from expirations {expirations[0]} to {expirations[-1]}"
