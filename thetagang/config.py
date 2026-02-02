@@ -1,5 +1,6 @@
 import math
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
@@ -108,6 +109,29 @@ class OrdersConfig(BaseModel, DisplayMixin):
 class IBAsyncConfig(BaseModel):
     api_response_wait_time: int = Field(default=60, ge=0)
     logfile: Optional[str] = None
+
+
+class DatabaseConfig(BaseModel, DisplayMixin):
+    enabled: bool = Field(default=True)
+    path: str = Field(default="data/thetagang.db")
+    url: Optional[str] = None
+
+    def add_to_table(self, table: Table, section: str = "") -> None:
+        table.add_section()
+        table.add_row("[spring_green1]Database")
+        table.add_row("", "Enabled", "=", f"{self.enabled}")
+        table.add_row("", "Path", "=", self.path)
+        if self.url:
+            table.add_row("", "URL", "=", self.url)
+
+    def resolve_url(self, config_path: str) -> str:
+        if self.url:
+            return self.url
+        base_dir = Path(config_path).resolve().parent
+        db_path = Path(self.path)
+        if not db_path.is_absolute():
+            db_path = base_dir / db_path
+        return f"sqlite:///{db_path}"
 
 
 class IBCConfig(BaseModel):
@@ -275,6 +299,10 @@ class WriteWhenConfig(BaseModel, DisplayMixin):
         cap_factor: float = Field(default=1.0, ge=0.0, le=1.0)
         cap_target_floor: float = Field(default=0.0, ge=0.0, le=1.0)
         excess_only: bool = Field(default=False)
+        min_threshold_percent: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+        min_threshold_percent_relative: Optional[float] = Field(
+            default=None, ge=0.0, le=1.0
+        )
 
     calculate_net_contracts: bool = Field(default=False)
     calls: "WriteWhenConfig.Calls" = Field(
@@ -300,6 +328,20 @@ class WriteWhenConfig(BaseModel, DisplayMixin):
             "", "Call cap target floor", "=", f"{pfmt(self.calls.cap_target_floor)}"
         )
         table.add_row("", "Excess only", "=", f"{self.calls.excess_only}")
+        if self.calls.min_threshold_percent is not None:
+            table.add_row(
+                "",
+                "Calls min threshold %",
+                "=",
+                f"{pfmt(self.calls.min_threshold_percent)}",
+            )
+        if self.calls.min_threshold_percent_relative is not None:
+            table.add_row(
+                "",
+                "Calls min threshold % relative",
+                "=",
+                f"{pfmt(self.calls.min_threshold_percent_relative)}",
+            )
 
 
 class RollWhenConfig(BaseModel, DisplayMixin):
@@ -468,6 +510,116 @@ class SymbolConfig(BaseModel):
     puts: Optional["SymbolConfig.Puts"] = None
     adjust_price_after_delay: bool = Field(default=False)
     no_trading: Optional[bool] = None
+    buy_only_rebalancing: Optional[bool] = None
+    buy_only_min_threshold_shares: Optional[int] = Field(default=None, ge=1)
+    buy_only_min_threshold_amount: Optional[float] = Field(default=None, ge=0.0)
+    buy_only_min_threshold_percent: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0
+    )
+    buy_only_min_threshold_percent_relative: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0
+    )
+    write_calls_only_min_threshold_percent: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0
+    )
+    write_calls_only_min_threshold_percent_relative: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0
+    )
+    sell_only_rebalancing: Optional[bool] = None
+    sell_only_min_threshold_shares: Optional[int] = Field(default=None, ge=1)
+    sell_only_min_threshold_amount: Optional[float] = Field(default=None, ge=0.0)
+    sell_only_min_threshold_percent: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0
+    )
+    sell_only_min_threshold_percent_relative: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0
+    )
+
+
+class RatioGateConfig(BaseModel, DisplayMixin):
+    enabled: bool = Field(default=False)
+    anchor: str = Field(default="")
+    drift_max: float = Field(default=1.25, ge=0.0)
+    var_min: float = Field(default=0.0, ge=0.0)
+
+    def add_to_table(self, table: Table, section: str = "") -> None:
+        table.add_row("", "Ratio gate enabled", "=", f"{self.enabled}")
+        table.add_row("", "Ratio gate anchor", "=", self.anchor or "-")
+        table.add_row("", "Ratio gate drift max", "=", f"{ffmt(self.drift_max)}")
+        table.add_row("", "Ratio gate var min", "=", f"{ffmt(self.var_min)}")
+
+
+class RegimeRebalanceConfig(BaseModel, DisplayMixin):
+    enabled: bool = Field(default=False)
+    symbols: List[str] = Field(default_factory=list)
+    lookback_days: int = Field(default=40, ge=1)
+    soft_band: float = Field(default=0.10, ge=0.0, le=1.0)
+    hard_band: float = Field(default=0.50, ge=0.0, le=1.0)
+    hard_band_rebalance_fraction: float = Field(default=1.0, gt=0.0, le=1.0)
+    cooldown_days: int = Field(default=5, ge=0)
+    choppiness_min: float = Field(default=3.0, ge=0.0)
+    efficiency_max: float = Field(default=0.30, ge=0.0, le=1.0)
+    flow_trade_min: float = Field(default=2000.0, ge=0.0)
+    flow_trade_stop: float = Field(default=1000.0, ge=0.0)
+    flow_imbalance_tau: float = Field(default=0.70, ge=0.0, le=1.0)
+    deficit_rail_start: float = Field(default=5000.0, ge=0.0)
+    deficit_rail_stop: float = Field(default=2500.0, ge=0.0)
+    eps: float = Field(default=1e-8, gt=0.0)
+    order_history_lookback_days: int = Field(default=30, ge=1)
+    shares_only: bool = Field(default=False)
+    ratio_gate: Optional[RatioGateConfig] = None
+
+    @model_validator(mode="after")
+    def validate_bands(self) -> Self:
+        if self.hard_band < self.soft_band:
+            raise ValueError("regime_rebalance.hard_band must be >= soft_band")
+        if self.flow_trade_min < self.flow_trade_stop:
+            raise ValueError(
+                "regime_rebalance.flow_trade_min must be >= flow_trade_stop"
+            )
+        if self.deficit_rail_start < self.deficit_rail_stop:
+            raise ValueError(
+                "regime_rebalance.deficit_rail_start must be >= deficit_rail_stop"
+            )
+        if self.ratio_gate is not None:
+            if not self.ratio_gate.anchor:
+                raise ValueError("regime_rebalance.ratio_gate.anchor must be set")
+            if self.ratio_gate.anchor not in self.symbols:
+                raise ValueError(
+                    "regime_rebalance.ratio_gate.anchor must be in regime_rebalance.symbols"
+                )
+            rest_symbols = [s for s in self.symbols if s != self.ratio_gate.anchor]
+            if not rest_symbols:
+                raise ValueError(
+                    "regime_rebalance.ratio_gate.anchor must leave at least one non-anchor symbol"
+                )
+        return self
+
+    def add_to_table(self, table: Table, section: str = "") -> None:
+        table.add_section()
+        table.add_row("[spring_green1]Regime-aware rebalancing")
+        table.add_row("", "Enabled", "=", f"{self.enabled}")
+        table.add_row("", "Symbols", "=", ", ".join(self.symbols) or "-")
+        table.add_row("", "Lookback days", "=", f"{self.lookback_days}")
+        table.add_row("", "Soft band (relative)", "=", f"{pfmt(self.soft_band, 0)}")
+        table.add_row("", "Hard band (relative)", "=", f"{pfmt(self.hard_band, 0)}")
+        table.add_row(
+            "",
+            "Hard band rebalance fraction",
+            "=",
+            f"{pfmt(self.hard_band_rebalance_fraction, 0)}",
+        )
+        table.add_row("", "Cooldown days", "=", f"{self.cooldown_days}")
+        table.add_row("", "Choppiness min", "=", f"{ffmt(self.choppiness_min)}")
+        table.add_row("", "Efficiency max", "=", f"{pfmt(self.efficiency_max)}")
+        table.add_row("", "Flow trade min", "=", f"{dfmt(self.flow_trade_min)}")
+        table.add_row("", "Flow trade stop", "=", f"{dfmt(self.flow_trade_stop)}")
+        table.add_row("", "Flow imbalance tau", "=", f"{ffmt(self.flow_imbalance_tau)}")
+        table.add_row("", "Deficit rail start", "=", f"{dfmt(self.deficit_rail_start)}")
+        table.add_row("", "Deficit rail stop", "=", f"{dfmt(self.deficit_rail_stop)}")
+        table.add_row("", "Shares only", "=", f"{self.shares_only}")
+        if self.ratio_gate is not None:
+            self.ratio_gate.add_to_table(table, section)
 
 
 class ActionWhenClosedEnum(str, Enum):
@@ -500,6 +652,7 @@ class Config(BaseModel, DisplayMixin):
     exchange_hours: ExchangeHoursConfig = Field(default_factory=ExchangeHoursConfig)
 
     orders: OrdersConfig = Field(default_factory=OrdersConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     ib_async: IBAsyncConfig = Field(default_factory=IBAsyncConfig)
     ibc: IBCConfig = Field(default_factory=IBCConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
@@ -508,10 +661,24 @@ class Config(BaseModel, DisplayMixin):
     write_when: WriteWhenConfig = Field(default_factory=WriteWhenConfig)
     symbols: Dict[str, SymbolConfig] = Field(default_factory=dict)
     constants: ConstantsConfig = Field(default_factory=ConstantsConfig)
+    regime_rebalance: RegimeRebalanceConfig = Field(
+        default_factory=RegimeRebalanceConfig
+    )
 
     def trading_is_allowed(self, symbol: str) -> bool:
         symbol_config = self.symbols.get(symbol)
         return not symbol_config or not symbol_config.no_trading
+
+    def is_buy_only_rebalancing(self, symbol: str) -> bool:
+        symbol_config = self.symbols.get(symbol)
+        return symbol_config is not None and symbol_config.buy_only_rebalancing is True
+
+    def is_sell_only_rebalancing(self, symbol: str) -> bool:
+        symbol_config = self.symbols.get(symbol)
+        return symbol_config is not None and symbol_config.sell_only_rebalancing is True
+
+    def is_regime_rebalance_symbol(self, symbol: str) -> bool:
+        return self.regime_rebalance.enabled and symbol in self.regime_rebalance.symbols
 
     def symbol_config(self, symbol: str) -> Optional[SymbolConfig]:
         return self.symbols.get(symbol)
@@ -617,6 +784,8 @@ class Config(BaseModel, DisplayMixin):
         )
         table.add_column("Symbol")
         table.add_column("Weight", justify="right")
+        table.add_column("Buy-only", justify="center")
+        table.add_column("Sell-only", justify="center")
         table.add_column("Call delta", justify="right")
         table.add_column("Call strike limit", justify="right")
         table.add_column("Call threshold", justify="right")
@@ -640,6 +809,8 @@ class Config(BaseModel, DisplayMixin):
             table.add_row(
                 symbol,
                 pfmt(sconfig.weight or 0.0),
+                "✓" if sconfig.buy_only_rebalancing else "",
+                "✓" if sconfig.sell_only_rebalancing else "",
                 ffmt(self.get_target_delta(symbol, "C")),
                 dfmt(sconfig.calls.strike_limit if sconfig.calls else None),
                 call_thresh,
@@ -664,11 +835,13 @@ class Config(BaseModel, DisplayMixin):
         if self.constants:
             self.constants.add_to_table(config_table)
         self.orders.add_to_table(config_table)
+        self.database.add_to_table(config_table)
         self.roll_when.add_to_table(config_table)
         self.write_when.add_to_table(config_table)
         self.target.add_to_table(config_table)
         self.cash_management.add_to_table(config_table)
         self.vix_call_hedge.add_to_table(config_table)
+        self.regime_rebalance.add_to_table(config_table)
 
         # Create tree and add tables
         tree = Tree(":control_knobs:")

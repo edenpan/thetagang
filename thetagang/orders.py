@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from ib_async import Contract, LimitOrder
 from rich import box
@@ -11,12 +11,14 @@ from thetagang.fmt import dfmt, ifmt
 
 class Orders:
     def __init__(self) -> None:
-        self.__records: List[Tuple[Contract, LimitOrder]] = []
+        self.__records: List[Tuple[Contract, LimitOrder, Optional[int]]] = []
 
-    def add_order(self, contract: Contract, order: LimitOrder) -> None:
-        self.__records.append((contract, order))
+    def add_order(
+        self, contract: Contract, order: LimitOrder, intent_id: Optional[int]
+    ) -> None:
+        self.__records.append((contract, order, intent_id))
 
-    def records(self) -> List[Tuple[Contract, LimitOrder]]:
+    def records(self) -> List[Tuple[Contract, LimitOrder, Optional[int]]]:
         return self.__records
 
     def print_summary(self) -> None:
@@ -33,13 +35,13 @@ class Orders:
         table.add_column("Price")
         table.add_column("Qty")
 
-        for contract, order in self.__records:
+        for contract, order, _intent_id in self.__records:
             table.add_row(
                 contract.symbol,
                 contract.exchange,
                 Pretty(contract, indent_size=2),
                 order.action,
-                dfmt(order.lmtPrice),
+                dfmt(float(order.lmtPrice) if order.lmtPrice is not None else None),
                 ifmt(int(order.totalQuantity)),
             )
 

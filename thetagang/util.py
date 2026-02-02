@@ -1,6 +1,6 @@
 import math
 from operator import itemgetter
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import ib_async.objects
 import ib_async.ticker
@@ -33,7 +33,10 @@ def portfolio_positions_to_dict(
 
 
 def position_pnl(position: ib_async.objects.PortfolioItem) -> float:
-    return position.unrealizedPNL / abs(position.averageCost * position.position)
+    denominator = position.averageCost * position.position
+    if denominator == 0:
+        return 0.0
+    return position.unrealizedPNL / abs(denominator)
 
 
 def get_short_positions(
@@ -95,19 +98,19 @@ def count_long_option_positions(positions: List[PortfolioItem], right: str) -> i
 
 
 def calculate_net_short_positions(positions: List[PortfolioItem], right: str) -> int:
-    shorts = [
+    shorts: List[Tuple[int, float, float]] = [
         (
             option_dte(p.contract.lastTradeDateOrContractMonth),
-            p.contract.strike,
-            p.position,
+            float(p.contract.strike),
+            float(p.position),
         )
         for p in get_short_positions(positions, right)
     ]
-    longs = [
+    longs: List[Tuple[int, float, float]] = [
         (
             option_dte(p.contract.lastTradeDateOrContractMonth),
-            p.contract.strike,
-            p.position,
+            float(p.contract.strike),
+            float(p.position),
         )
         for p in get_long_positions(positions, right)
     ]
@@ -223,7 +226,9 @@ def get_target_calls(
 def would_increase_spread(order: Order, updated_price: float) -> bool:
     return (
         order.action == "BUY"
+        and order.lmtPrice is not None
         and updated_price < order.lmtPrice
         or order.action == "SELL"
+        and order.lmtPrice is not None
         and updated_price > order.lmtPrice
     )

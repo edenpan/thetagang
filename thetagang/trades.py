@@ -6,20 +6,28 @@ from rich.pretty import Pretty
 from rich.table import Table
 
 from thetagang import log
+from thetagang.db import DataStore
 from thetagang.fmt import dfmt, ffmt, ifmt
 from thetagang.ibkr import IBKR
 
 
 class Trades:
-    def __init__(self, ibkr: IBKR) -> None:
+    def __init__(self, ibkr: IBKR, data_store: Optional[DataStore] = None) -> None:
         self.ibkr = ibkr
+        self.data_store = data_store
         self.__records: List[Trade] = []
 
     def submit_order(
-        self, contract: Contract, order: LimitOrder, idx: Optional[int] = None
+        self,
+        contract: Contract,
+        order: LimitOrder,
+        idx: Optional[int] = None,
+        intent_id: Optional[int] = None,
     ) -> None:
         try:
             trade = self.ibkr.place_order(contract, order)
+            if self.data_store:
+                self.data_store.record_order(contract, order, intent_id=intent_id)
             if idx is not None:
                 self.__replace_trade(trade, idx)
             else:
@@ -55,7 +63,11 @@ class Trades:
                 trade.contract.exchange,
                 Pretty(trade.contract, indent_size=2),
                 trade.order.action,
-                dfmt(trade.order.lmtPrice),
+                dfmt(
+                    float(trade.order.lmtPrice)
+                    if trade.order.lmtPrice is not None
+                    else None
+                ),
                 ifmt(int(trade.order.totalQuantity)),
                 trade.orderStatus.status,
                 ffmt(trade.orderStatus.filled, 0),

@@ -28,13 +28,13 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install uv and set the python version with caching
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
@@ -50,11 +50,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Cache TWS
         id: cache-tws
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         env:
           cache-name: cache-tws
         with:
@@ -66,9 +66,9 @@ jobs:
         run: ./extract-installer.sh
 
       - name: Install uv and set the python version with caching
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
-          python-version: 3.11
+          python-version: 3.14
           enable-cache: true
 
       - name: Install the project
@@ -83,7 +83,7 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: sigstore/cosign-installer@main
         with:
-          cosign-release: "v1.4.0"
+          cosign-release: "v2.5.2"
 
       - name: Set up QEMU
         id: qemu

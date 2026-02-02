@@ -35,8 +35,6 @@ RUN apt-get update \
   libxrender1 \
   libxtst6 \
   openjfx \
-  python3-pip \
-  python3-setuptools \
   unzip \
   wget \
   xdg-utils \
@@ -51,14 +49,21 @@ RUN apt-get update \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
+ENV VIRTUAL_ENV="/opt/venv"
+ENV PATH="/opt/venv/bin:/root/.local/bin:${PATH}"
+
 WORKDIR /src
 
 ADD ./tws/Jts /root/Jts
 ADD ./dist /src/dist
 ADD entrypoint.bash /src/entrypoint.bash
-ADD ./data/jxbrowser-linux64-arm-7.29.jar /root/Jts/1030/jars/
+ADD ./data/jxbrowser-linux64-arm-7.29.jar /root/Jts/1037/jars/
 
-RUN python3 -m pip install dist/thetagang-*.whl \
+RUN wget -qO- https://astral.sh/uv/install.sh | sh \
+  && uv python install 3.14 \
+  && uv venv /opt/venv --python 3.14 \
+  && if test "$(dpkg --print-architecture)" = "armhf" ; then export PIP_EXTRA_INDEX_URL=https://www.piwheels.org/simple ; fi \
+  && uv pip install --python /opt/venv/bin/python dist/thetagang-*.whl \
   && rm -rf /root/.cache \
   && rm -rf dist \
   && echo '--module-path /usr/share/openjfx/lib' | tee -a /root/Jts/*/tws.vmoptions \

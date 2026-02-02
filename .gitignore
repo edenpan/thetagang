@@ -1,6 +1,10 @@
 .vscode/
 ibc.log
 tws-installer.sh
+.idea/
+# local configuration
+thetagang.local.toml
+
 thetagang.toml
 .idea/
 # local configuration
@@ -154,3 +158,6 @@ cython_debug/
 
 # Ignore notebooks
 *.ipynb
+
+# Ignore local db for testing
+data/thetagang.db

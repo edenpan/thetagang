@@ -91,6 +91,16 @@ minimum_credit = 0.05
     ],
   ]
 
+[database]
+# Enable SQLite state storage for historical actions and data snapshots.
+enabled = true
+
+# Path to the SQLite file, relative to the config file location unless absolute.
+path = "data/thetagang.db"
+
+# Optional SQLAlchemy URL override, e.g. "sqlite:////abs/path/thetagang.db".
+# url = "sqlite:////path/to/thetagang.db"
+
 [option_chains]
 # The option chains are lazy loaded, and before you can determine the greeks
 # (delta) or prices, you need to scan the chains. The settings here tell
@@ -245,6 +255,22 @@ calculate_net_contracts = false
   green = true
   red   = false
 
+  # Global call writing thresholds (can be overridden per symbol)
+  # These work the same as buy_only thresholds but limit call writing
+  #
+  # Only write calls if position is at least X% of net liquidation value
+  # min_threshold_percent = 0.05  # Only write calls if position >= 5% of NLV
+  #
+  # Only write calls if position exceeds target allocation by X%
+  # min_threshold_percent_relative = 0.2  # Only write calls if position > 20% above target
+  #
+  # Example: If you set min_threshold_percent_relative = 0.2 and a symbol has 10% target allocation:
+  # - If position is 11% of NLV (10% above target), no calls written
+  # - If position is 13% of NLV (30% above target), calls can be written
+  #
+  # These can be overridden per symbol using write_calls_only_min_threshold_percent
+  # and write_calls_only_min_threshold_percent_relative in the symbol config
+
   # With covered calls, we can cap the number of calls to write by this factor. At
   # 1.0, we write covered calls on 100% of our positions. At 0.5, we'd only write
   # on 50% of our positions. This value must be between 1 and 0 inclusive.
@@ -347,6 +373,11 @@ minimum_open_interest = 10
   # The target delta may also be specified per-symbol, and takes precedence over
   # `target.delta` or `target.puts/calls.delta`. You can specify a value for the
   # symbol, or override individually for puts/calls.
+  #
+  # Additionally, you can enable buy-only rebalancing for any symbol by setting
+  # `buy_only_rebalancing = true`. This will cause the bot to buy shares directly
+  # instead of writing puts, which is useful for maintaining core positions in
+  # certain assets. See the TLT example below for more details.
   [symbols.SPY]
   weight = 0.4
 
@@ -440,11 +471,117 @@ minimum_open_interest = 10
     # value.
     excess_only = false
 
+# Sell-only rebalancing example:
+# This symbol demonstrates sell-only rebalancing, which is useful for gradually
+# reducing positions when they exceed target allocation.
+#
+# [symbols.TSLA]
+# weight = 0.1
+# sell_only_rebalancing = true
+# sell_only_min_threshold_shares = 5  # Only sell if selling at least 5 shares
+# sell_only_min_threshold_percent_relative = 0.2  # Only sell if >20% above target
+#
+# When TSLA grows to more than 12% of portfolio (20% above 10% target), the bot
+# will sell shares to bring it back to 10%. No puts are written, and no calls
+# are written on this position.
+
+# Band rebalancing example (both buy and sell):
+# This creates a rebalancing "band" around the target allocation.
+#
+# [symbols.BTC]
+# weight = 0.05
+# buy_only_rebalancing = true
+# sell_only_rebalancing = true
+# buy_only_min_threshold_percent_relative = 0.15   # Buy when >15% below target
+# sell_only_min_threshold_percent_relative = 0.15  # Sell when >15% above target
+#
+# This keeps BTC between 4.25% and 5.75% of the portfolio (±15% of 5% target).
+# No options are written on this position.
+
+# Regime-aware rebalancing example:
+# This will rebalance the listed symbols when allocations drift beyond a
+# relative band around target weights. The soft band uses the regime filter and
+# cooldown to harvest variance in choppy markets. The hard band is a safety
+# rail that ignores the regime filter and cooldown to prevent extreme drift. You
+# can optionally rebalance only partway back to target on a hard-band breach.
+# Rebalances are gated by a cooldown that counts trading sessions after the last
+# rebalance (based on executions whose orderRef starts with "tg:regime-rebalance").
+#
+# [regime_rebalance]
+# enabled = true
+# symbols = ["TQQQ", "BTAL"]
+# lookback_days = 40
+# soft_band = 0.25  # +/-25% relative drift from target weight
+# hard_band = 0.50  # +/-50% relative drift from target weight
+# hard_band_rebalance_fraction = 1.0  # 1.0 = full to target, 0.5 = halfway
+# cooldown_days = 5
+# choppiness_min = 3.0
+# efficiency_max = 0.30
+# flow_trade_min = 2000  # absolute excess cash needed to start flow trades
+# flow_trade_stop = 1000  # hysteresis stop once within this band
+# flow_imbalance_tau = 0.70  # 0..1, higher requires more directional coherence
+# deficit_rail_start = 5000  # absolute deficit that triggers safety rail
+# deficit_rail_stop = 2500  # hysteresis stop once within this band
+# order_history_lookback_days = 30  # look back this many calendar days for fills
+# shares_only = false  # when true, disables all option writes/rolls
+#
+# # Optional ratio gate (shadow mode when enabled=false):
+# # Uses log((rest basket) / anchor) to measure variance vs drift.
+# [regime_rebalance.ratio_gate]
+# enabled = false  # when true, gates soft rebalances only
+# anchor = "BTAL"  # hedge sleeve anchor; rest is symbols minus anchor
+# drift_max = 1.25  # t-stat threshold for mean drift of ratio returns
+# var_min = 0.0  # minimum variance of ratio returns
+
   [symbols.TLT]
   weight = 0.2
   # parts = 20
   # Override delta for this particular symbol, for both puts and calls.
   delta = 0.4
+
+  # Buy-only rebalancing: this will buy shares directly instead of writing puts
+  # to build the position. This is useful for symbols where you want to maintain
+  # a core position without the complexity of options.
+  #
+  # When buy_only_rebalancing = true:
+  # - The bot will never write puts for this symbol
+  # - It will buy shares directly when below target allocation
+  # - It will only buy (never sell) to maintain target weight
+  # - You can still write covered calls on the shares you own
+  # - The position is built through direct stock purchases instead of CSPs
+  #
+  # Minimum thresholds (optional):
+  # - buy_only_min_threshold_shares: Minimum number of shares to buy (default: 1)
+  # - buy_only_min_threshold_amount: Minimum dollar amount for a purchase
+  # - buy_only_min_threshold_percent: Minimum as percentage of net liquidation value (absolute)
+  # - buy_only_min_threshold_percent_relative: Minimum as percentage difference from target allocation
+  #   * Priority: relative percent > absolute percent > dollar amount > share count
+  #   * If min amount < 1 share price, it rounds up to 1 share
+  #
+  # Examples:
+  # buy_only_rebalancing = true
+  # buy_only_min_threshold_shares = 10  # Only buy if buying at least 10 shares
+  # buy_only_min_threshold_amount = 1000.0  # Only buy if order is at least $1000
+  # buy_only_min_threshold_percent = 0.01  # Only buy if order is at least 1% of NLV
+  # buy_only_min_threshold_percent_relative = 0.1  # Only buy if position is >10% below target
+  #
+  # Relative threshold example:
+  # If TLT is allocated 50% but currently only 25% of NLV:
+  # - Relative difference = (50% - 25%) / 50% = 50%
+  # - If threshold = 0.1 (10%), then 50% > 10%, so buy is allowed
+  #
+  # Call writing thresholds (similar to buy thresholds but for limiting call writes):
+  # - write_calls_only_min_threshold_percent: Only write calls if position is at least X% of NLV
+  # - write_calls_only_min_threshold_percent_relative: Only write calls if position exceeds target by X%
+  #
+  # Examples:
+  # write_calls_only_min_threshold_percent = 0.05  # Only write calls if position is at least 5% of NLV
+  # write_calls_only_min_threshold_percent_relative = 0.2  # Only write calls if position exceeds target by 20%
+  #
+  # Relative threshold example for calls:
+  # If SPY is allocated 20% but currently 30% of NLV:
+  # - Relative excess = (30% - 20%) / 20% = 50%
+  # - If threshold = 0.2 (20%), then 50% > 20%, so call writing is allowed
 
   [symbols.ABNB]
   # For symbols that require an exchange, which is typically any company stock,
